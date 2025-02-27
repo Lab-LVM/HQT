@@ -5,7 +5,9 @@ This repository contains PyTorch-based implementation of accepted BMVC 2024 pape
 > Sungeun Kim, Jongbin Ryu<br/>
 > The British Machine Vision Conference (BMVC), 2024<br/>
 
-![model overview](HQT_illustration.png)
+<p align="center">
+ <img src = "./HQT_illustration.png">
+</p>
 
 ## Train scripts
 - HQT+BihalfNet(CIFAR10-I)
