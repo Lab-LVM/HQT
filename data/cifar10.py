@@ -3,13 +3,17 @@
 import os, sys, pickle
 import torch
 import numpy as np
+import torchvision.transforms as transforms
+import torchvision.datasets as dataset
 from PIL import Image
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
 from data.transform import train_transforms, test_transforms, Onehot, encode_onehot, train_aug_transforms
 
+
+
 def load_data(root, num_query, num_train, batch_size, num_workers, hash_model, mean, std, img_size, scale,
-              get_feature=False, hqt_label=None):
+              get_feature=False, hqt_label=None, bihalf_loader=True):
     """
     Load cifar10 dataset.
 
@@ -29,13 +33,18 @@ def load_data(root, num_query, num_train, batch_size, num_workers, hash_model, m
     Returns
         query_dataloader, train_dataloader, retrieval_dataloader(torch.evaluate.data.DataLoader): Data loader.
     """
-    CIFAR10.init(root, num_query, num_train)
     if hash_model == "bihalf":
         train_transform = train_transforms(mean, std, img_size)
     else:
         train_transform = train_aug_transforms(mean, std, img_size, scale)
     query_transform = test_transforms(mean, std, img_size)
-    train_dataset = CIFAR10('train', transform=train_transform, target_transform=None)
+    if bihalf_loader:
+        train_dataset, query_dataset, retrieval_dataset = parsedata()
+    else:
+        CIFAR10.init(root, num_query, num_train)
+        train_dataset = CIFAR10('train', transform=train_transform, target_transform=None)
+        query_dataset = CIFAR10('query', transform=query_transform, target_transform=Onehot())
+        retrieval_dataset = CIFAR10('database', transform=query_transform, target_transform=Onehot())
     if get_feature:
         train_dataloader = DataLoader(
             train_dataset,
@@ -47,8 +56,7 @@ def load_data(root, num_query, num_train, batch_size, num_workers, hash_model, m
         return train_dataloader
     if hqt_label is not None:
         train_dataset.targets = hqt_label
-    query_dataset = CIFAR10('query', transform=query_transform, target_transform=Onehot())
-    retrieval_dataset = CIFAR10('database', transform=query_transform, target_transform=Onehot())
+
     train_dataloader = DataLoader(
         train_dataset,
         shuffle=True,
@@ -183,3 +191,98 @@ class CIFAR10(Dataset):
         Return one-hot encoding targets.
         """
         return torch.FloatTensor(self.onehot_targets)
+
+
+class Bihalf_CIFAR10(dataset.CIFAR10):
+    def __init__(self, root, train, transform, target_transform, download=False):
+        super().__init__(root, train, transform, target_transform, download)
+
+    def __getitem__(self, index):
+        img, target = super().__getitem__(index)
+        img1 = img
+        img2 = img
+
+        return img1, img2, target, index
+
+
+def parsedata():
+    train_transform = transforms.Compose([
+        transforms.Resize(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+
+    test_transform = transforms.Compose([
+        transforms.Resize(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    train_dataset = Bihalf_CIFAR10(root='./dataset',
+                                  train=True,
+                                  transform=train_transform,
+                                  target_transform=None,
+                                  download=True)
+
+    test_dataset = Bihalf_CIFAR10(root='./dataset',
+                                 train=False,
+                                 transform=test_transform,
+                                 target_transform=Onehot())
+
+    database_dataset = Bihalf_CIFAR10(root='./dataset',
+                                     train=False,
+                                     transform=test_transform,
+                                     target_transform=Onehot())
+
+    # Re-Construct training, query and database set
+    X = train_dataset.data
+    L = np.array(train_dataset.targets)
+
+    X = np.concatenate((X, test_dataset.data))
+    L = np.concatenate((L, np.array(test_dataset.targets)))
+
+    first = True
+
+    for label in range(10):
+        index = np.where(L == label)[0]
+
+        N = index.shape[0]
+        np.random.seed(0)
+        perm = np.random.permutation(N)
+        index = index[perm]
+
+        data = X[index[0:1000]]
+        labels = L[index[0:1000]]
+        if first:
+            test_L = labels
+            test_data = data
+        else:
+            test_L = np.concatenate((test_L, labels))
+            test_data = np.concatenate((test_data, data))
+
+        data = X[index[1000:6000]]
+        labels = L[index[1000:6000]]
+        if first:
+            dataset_L = labels
+            data_set = data
+        else:
+            dataset_L = np.concatenate((dataset_L, labels))
+            data_set = np.concatenate((data_set, data))
+
+        data = X[index[1000:1500]]
+        labels = L[index[1000:1500]]
+        if first:
+            train_L = labels
+            train_data = data
+        else:
+            train_L = np.concatenate((train_L, labels))
+            train_data = np.concatenate((train_data, data))
+
+        first = False
+        train_dataset.data = train_data
+        train_dataset.targets = train_L.astype(np.int32)
+        test_dataset.data = test_data
+        test_dataset.targets = (test_L).astype(np.int32)
+        database_dataset.data = data_set
+        database_dataset.targets = (dataset_L).astype(np.int32)
+
+    return train_dataset, test_dataset, database_dataset
